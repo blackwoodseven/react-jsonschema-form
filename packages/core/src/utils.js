@@ -218,10 +218,10 @@ function computeDefaults(
     );
   } else if ("oneOf" in schema) {
     schema =
-      schema.oneOf[getMatchingOption(undefined, schema.oneOf, rootSchema)];
+      schema.oneOf[getMatchingOption(formData, schema.oneOf, rootSchema)];
   } else if ("anyOf" in schema) {
     schema =
-      schema.anyOf[getMatchingOption(undefined, schema.anyOf, rootSchema)];
+      schema.anyOf[getMatchingOption(formData, schema.anyOf, rootSchema)];
   }
 
   // Not defaults defined for this node, fallback to generic typed ones.
@@ -655,8 +655,26 @@ export function stubExistingAdditionalProperties(
 }
 
 export function resolveSchema(schema, rootSchema = {}, formData = {}) {
+  if (schema.hasOwnProperty("properties")) {
+    Object.keys(schema.properties).map(key => {
+      schema.properties[key] = retrieveSchema(
+        schema.properties[key],
+        rootSchema,
+        formData[key] ? formData[key] : {}
+      );
+      return;
+    });
+  }
+
+  if (schema.hasOwnProperty("items")) {
+    schema.items = retrieveSchema(schema.items, rootSchema, formData);
+  }
+
   if (schema.hasOwnProperty("$ref")) {
-    return resolveReference(schema, rootSchema, formData);
+    var _schema = resolveReference(schema, rootSchema, formData);
+    // Hack to resolve $id collisions
+    delete _schema.$id;
+    return _schema;
   } else if (schema.hasOwnProperty("dependencies")) {
     const resolvedSchema = resolveDependencies(schema, rootSchema, formData);
     return retrieveSchema(resolvedSchema, rootSchema, formData);
@@ -665,6 +683,13 @@ export function resolveSchema(schema, rootSchema = {}, formData = {}) {
       ...schema,
       allOf: schema.allOf.map(allOfSubschema =>
         retrieveSchema(allOfSubschema, rootSchema, formData)
+      ),
+    };
+  } else if (schema.hasOwnProperty("oneOf")) {
+    return {
+      ...schema,
+      oneOf: schema.oneOf.map(oneOfSubschema =>
+        retrieveSchema(oneOfSubschema, rootSchema, formData)
       ),
     };
   } else {
@@ -691,7 +716,7 @@ export function retrieveSchema(schema, rootSchema = {}, formData = {}) {
     return {};
   }
   let resolvedSchema = resolveSchema(schema, rootSchema, formData);
-  if ("allOf" in schema) {
+  if ("allOf" in resolvedSchema) {
     try {
       resolvedSchema = mergeAllOf({
         ...resolvedSchema,
@@ -1185,11 +1210,12 @@ export function getMatchingOption(formData, options, rootSchema) {
     // "anyOf" with an array of requires. This augmentation expresses that the
     // schema should match if any of the keys in the schema are present on the
     // object and pass validation.
-    if (option.properties) {
+    var resolvedOption = retrieveSchema(option, rootSchema, formData);
+    if (resolvedOption.properties) {
       // Create an "anyOf" schema that requires at least one of the keys in the
       // "properties" object
       const requiresAnyOf = {
-        anyOf: Object.keys(option.properties).map(key => ({
+        anyOf: Object.keys(resolvedOption.properties).map(key => ({
           required: [key],
         })),
       };
@@ -1197,9 +1223,9 @@ export function getMatchingOption(formData, options, rootSchema) {
       let augmentedSchema;
 
       // If the "anyOf" keyword already exists, wrap the augmentation in an "allOf"
-      if (option.anyOf) {
+      if (resolvedOption.anyOf) {
         // Create a shallow clone of the option
-        const { ...shallowClone } = option;
+        const { ...shallowClone } = resolvedOption;
 
         if (!shallowClone.allOf) {
           shallowClone.allOf = [];
@@ -1212,7 +1238,7 @@ export function getMatchingOption(formData, options, rootSchema) {
 
         augmentedSchema = shallowClone;
       } else {
-        augmentedSchema = Object.assign({}, option, requiresAnyOf);
+        augmentedSchema = Object.assign({}, resolvedOption, requiresAnyOf);
       }
 
       // Remove the "required" field as it's likely that not all fields have
@@ -1222,7 +1248,7 @@ export function getMatchingOption(formData, options, rootSchema) {
       if (isValid(augmentedSchema, formData)) {
         return i;
       }
-    } else if (isValid(options[i], formData)) {
+    } else if (isValid(resolvedOption, formData)) {
       return i;
     }
   }
